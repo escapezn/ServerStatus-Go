@@ -100,14 +100,15 @@ func (s *Sender) connect(ctx context.Context) {
 		}
 	}
 
-	if !s.handleAuth(conn) {
+	authResp, ok := s.handleAuth(conn)
+	if !ok {
 		return
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	err = s.handleMonitorConfig(childCtx, conn)
+	err = s.handleMonitorConfig(childCtx, conn, authResp)
 	if err != nil {
 		slog.Error("Handle monitor config failed", "err", err)
 		return
@@ -129,44 +130,51 @@ func (s *Sender) connect(ctx context.Context) {
 	s.sendStatusLoop(childCtx, conn)
 }
 
-func (s *Sender) handleAuth(conn net.Conn) bool {
+func (s *Sender) handleAuth(conn net.Conn) (string, bool) {
 	buf := make([]byte, 1024)
 	n, err := conn.Read(buf)
 	if err != nil || !strings.Contains(string(buf[:n]), "Authentication required") {
 		slog.Error("Auth requirement check failed", "err", err)
-		return false
+		return "", false
 	}
 
 	_, err = conn.Write([]byte(s.cfg.User + ":" + s.cfg.Password + "\n"))
 	if err != nil {
 		slog.Error("Send auth failed", "err", err)
-		return false
+		return "", false
 	}
 
 	n, err = conn.Read(buf)
-	if err != nil || !strings.Contains(string(buf[:n]), "Authentication successful") {
-		slog.Error("Auth failed", "response", string(buf[:n]), "err", err)
-		return false
+	resp := string(buf[:n])
+	if err != nil || !strings.Contains(resp, "Authentication successful") {
+		slog.Error("Auth failed", "response", resp, "err", err)
+		return "", false
 	}
 
 	slog.Info("Authentication successful")
-	return true
+	return resp, true
 }
 
-func (s *Sender) handleMonitorConfig(ctx context.Context, conn net.Conn) error {
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
-	if err != nil {
-		return err
+func (s *Sender) handleMonitorConfig(ctx context.Context, conn net.Conn, initialData string) error {
+	data := initialData
+
+	// 若认证响应中未包含连接模式或监控信息，尝试短暂读取后续报文（针对分包到达场景）
+	if !strings.Contains(data, "IPv4") && !strings.Contains(data, "IPv6") && !strings.Contains(data, "monitor") {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		buf := make([]byte, 1024)
+		n, err := conn.Read(buf)
+		_ = conn.SetReadDeadline(time.Time{})
+		if err == nil && n > 0 {
+			data += "\n" + string(buf[:n])
+		}
 	}
-	data := string(buf[:n])
 
 	if strings.Contains(data, "IPv4") {
-		// checkIP = 6 (ignoring as we check both in background)
+		slog.Debug("Server connection mode: IPv4")
 	} else if strings.Contains(data, "IPv6") {
-		// checkIP = 4
+		slog.Debug("Server connection mode: IPv6")
 	} else {
-		return fmt.Errorf("unknown connection mode")
+		slog.Debug("Server connection mode not specified, continuing")
 	}
 
 	s.store.Update(func(st *common.Store) {
