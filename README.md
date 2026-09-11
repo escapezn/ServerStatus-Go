@@ -52,6 +52,8 @@ go build -o serverStatus .
 | `-password` | string | (必填) | 客户端密码 |
 | `-dsn` | string | - | DSN 格式: `username:password@host:port`，与上述参数二选一 |
 | `-interval` | float | `1.0` | 数据上报间隔（秒） |
+| `-iface` | string | `""` | 指定监控的网络接口名（多个用逗号分隔，如 `pppoe-wan,eth1`；传入 `auto` 可自动识别默认出口网卡，非常适合软路由/OpenWrt） |
+| `-exclude-net` | string | `""` | 排除的网络接口正则模式（如 `lan.*\|wlan.*`） |
 | `-vnstat` | bool | `false` | 使用 vnstat 获取网络流量（仅 Linux） |
 | `-cu` | string | `cu.tz.cloudcpp.com` | 联通探针地址 |
 | `-ct` | string | `ct.tz.cloudcpp.com` | 电信探针地址 |
@@ -82,6 +84,28 @@ WantedBy=multi-user.target
 systemctl daemon-reload
 systemctl enable --now serverstatus-go
 ```
+
+### 软路由 / OpenWrt 路由器环境配置
+
+在软路由或 OpenWrt 环境中，由于路由器充当交换机和网关，默认会统计所有物理口（如 LAN 口）与网桥的流量，导致内外网转发流量被重复计算。
+
+**建议使用 `-iface` 参数指定出口网卡：**
+
+- **方式一（推荐）：自动识别主出网接口**
+  ```bash
+  ./serverStatus -host 1.2.3.4 -port 35601 -user myuser -password mypass -iface auto
+  ```
+  `-iface auto` 会自动读取系统路由表识别默认网关所绑定的出口网卡（如 `pppoe-wan` 或 `eth1`）。
+
+- **方式二：手动指定 WAN 口 / 拨号接口**
+  ```bash
+  ./serverStatus -host 1.2.3.4 -port 35601 -user myuser -password mypass -iface pppoe-wan
+  ```
+
+- **方式三：排除内网及无线接口**
+  ```bash
+  ./serverStatus -host 1.2.3.4 -port 35601 -user myuser -password mypass -exclude-net "lan.*|wlan.*|br.*"
+  ```
 
 ## 交叉编译
 

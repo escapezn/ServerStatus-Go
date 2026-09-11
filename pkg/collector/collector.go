@@ -19,17 +19,39 @@ import (
 )
 
 var (
-	ValidFs = []string{"ext4", "ext3", "ext2", "reiserfs", "jfs", "btrfs", "fuseblk", "zfs", "simfs", "ntfs", "fat32", "exfat", "xfs", "apfs"}
-	cachedFs = make(map[string]struct{})
+	ValidFs          = []string{"ext4", "ext3", "ext2", "reiserfs", "jfs", "btrfs", "fuseblk", "zfs", "simfs", "ntfs", "fat32", "exfat", "xfs", "apfs"}
+	cachedFs         = make(map[string]struct{})
+	defaultVirtRegex = regexp.MustCompile(`lo|tun|docker|veth|br-|vmbr|vnet|kube`)
 )
 
 type Collector struct {
-	cfg   *config.Config
-	store *common.Store
+	cfg          *config.Config
+	store        *common.Store
+	ifaceList    []string
+	isAutoIface  bool
+	excludeRegex *regexp.Regexp
 }
 
 func NewCollector(cfg *config.Config, store *common.Store) *Collector {
-	return &Collector{cfg: cfg, store: store}
+	c := &Collector{cfg: cfg, store: store}
+	if cfg.Iface != "" {
+		if strings.EqualFold(cfg.Iface, "auto") {
+			c.isAutoIface = true
+		} else {
+			for _, item := range strings.Split(cfg.Iface, ",") {
+				item = strings.TrimSpace(item)
+				if item != "" {
+					c.ifaceList = append(c.ifaceList, item)
+				}
+			}
+		}
+	}
+	if cfg.ExcludeNet != "" {
+		if reg, err := regexp.Compile(cfg.ExcludeNet); err == nil {
+			c.excludeRegex = reg
+		}
+	}
+	return c
 }
 
 func (c *Collector) Start() {
@@ -250,17 +272,24 @@ func (c *Collector) getNetBytes() (rx, tx int64, err error) {
 		return 0, 0, err
 	}
 	defer file.Close()
+
+	var autoIfaces []string
+	if c.isAutoIface {
+		if ifaces, err := getDefaultGatewayInterfaces(); err == nil && len(ifaces) > 0 {
+			autoIfaces = ifaces
+		}
+	}
+
 	scanner := bufio.NewScanner(file)
 	scanner.Scan()
 	scanner.Scan()
-	virtRegex := regexp.MustCompile(`lo|tun|docker|veth|br-|vmbr|vnet|kube`)
 	for scanner.Scan() {
 		parts := strings.Fields(scanner.Text())
 		if len(parts) < 10 {
 			continue
 		}
 		dev := strings.TrimSuffix(parts[0], ":")
-		if virtRegex.MatchString(dev) {
+		if !c.shouldCollectDev(dev, autoIfaces) {
 			continue
 		}
 		r, _ := strconv.ParseInt(parts[1], 10, 64)
@@ -269,6 +298,65 @@ func (c *Collector) getNetBytes() (rx, tx int64, err error) {
 		tx += t
 	}
 	return rx, tx, scanner.Err()
+}
+
+func (c *Collector) shouldCollectDev(dev string, autoIfaces []string) bool {
+	// 1. 如果指定了 auto 且成功获取了默认出网网卡
+	if c.isAutoIface && len(autoIfaces) > 0 {
+		for _, iface := range autoIfaces {
+			if dev == iface {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 2. 如果配置了具体的网卡白名单
+	if len(c.ifaceList) > 0 {
+		for _, iface := range c.ifaceList {
+			if dev == iface {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 3. 默认过滤逻辑（黑名单模式）
+	if defaultVirtRegex.MatchString(dev) {
+		return false
+	}
+	if c.excludeRegex != nil && c.excludeRegex.MatchString(dev) {
+		return false
+	}
+
+	return true
+}
+
+func getDefaultGatewayInterfaces() ([]string, error) {
+	file, err := os.Open("/proc/net/route")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var ifaces []string
+	seen := make(map[string]struct{})
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		// 第2列为 Destination, 00000000 表示默认网关
+		if len(fields) >= 2 && fields[1] == "00000000" {
+			iface := fields[0]
+			if _, ok := seen[iface]; !ok {
+				seen[iface] = struct{}{}
+				ifaces = append(ifaces, iface)
+			}
+		}
+	}
+	if len(ifaces) == 0 {
+		return nil, fmt.Errorf("no default gateway found in /proc/net/route")
+	}
+	return ifaces, nil
 }
 
 func (c *Collector) diskIOMonitor() {
@@ -299,7 +387,11 @@ func (c *Collector) diskIOMonitor() {
 }
 
 func (c *Collector) trafficVnstat() (uint64, uint64, error) {
-	buf, err := exec.Command("vnstat", "--oneline", "b").Output()
+	args := []string{"--oneline", "b"}
+	if c.cfg.Iface != "" && !c.isAutoIface && len(c.ifaceList) == 1 {
+		args = append([]string{"-i", c.ifaceList[0]}, args...)
+	}
+	buf, err := exec.Command("vnstat", args...).Output()
 	if err != nil {
 		return 0, 0, err
 	}

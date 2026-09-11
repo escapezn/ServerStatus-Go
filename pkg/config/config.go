@@ -3,6 +3,7 @@ package config
 import (
 	"flag"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -23,6 +24,8 @@ type Config struct {
 	EnableTLS           bool
 	TLSSkipVerify       bool
 	TLSServerName       string
+	Iface               string
+	ExcludeNet          string
 }
 
 func LoadConfig() *Config {
@@ -33,6 +36,8 @@ func LoadConfig() *Config {
 	interval := flag.Float64("interval", 1.0, "数据发送间隔(秒)")
 	dsn := flag.String("dsn", "", "DSN 格式: username:password@host:port")
 	vnstat := flag.Bool("vnstat", false, "使用 vnstat 获取网络流量(仅Linux)")
+	iface := flag.String("iface", "", "指定监控的网络接口名(多个用逗号分隔, 支持 auto 自动识别默认出口网卡)")
+	excludeNet := flag.String("exclude-net", "", "排除的网络接口正则模式(如 'lan.*|wlan.*')")
 	cu := flag.String("cu", "cu.tz.cloudcpp.com", "CU 探针地址")
 	ct := flag.String("ct", "ct.tz.cloudcpp.com", "CT 探针地址")
 	cm := flag.String("cm", "cm.tz.cloudcpp.com", "CM 探针地址")
@@ -52,6 +57,8 @@ func LoadConfig() *Config {
 		Password:            *password,
 		Interval:            *interval,
 		IsVnstat:            *vnstat,
+		Iface:               strings.TrimSpace(*iface),
+		ExcludeNet:          strings.TrimSpace(*excludeNet),
 		CU:                  *cu,
 		CT:                  *ct,
 		CM:                  *cm,
@@ -112,5 +119,11 @@ func (c *Config) validate() {
 		c.ProbeProtocolPrefer = "ip6"
 	default:
 		c.ProbeProtocolPrefer = "ip"
+	}
+
+	if c.ExcludeNet != "" {
+		if _, err := regexp.Compile(c.ExcludeNet); err != nil {
+			log.Fatalf("exclude-net 正则表达式无效: %v", err)
+		}
 	}
 }
