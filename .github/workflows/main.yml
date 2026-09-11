@@ -4,6 +4,9 @@ on:
   repository_dispatch:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -24,6 +27,8 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
         
       - name: Bump Version and Push Tag
         id: bump
@@ -31,6 +36,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WITH_V: false  # 不生成带v前缀的标签，如1.0.0而非v1.0.0
+          DEFAULT_BUMP: patch
+          INITIAL_VERSION: 1.0.0
           
       - name: Build Go
         run: |
