@@ -2,6 +2,7 @@ package sender
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -61,9 +62,25 @@ func (s *Sender) Start(ctx context.Context) {
 
 func (s *Sender) connect(ctx context.Context) {
 	addr := net.JoinHostPort(s.cfg.Server, fmt.Sprintf("%d", s.cfg.Port))
-	slog.Info("Connecting to server", "addr", addr)
+	slog.Info("Connecting to server", "addr", addr, "tls", s.cfg.EnableTLS)
 
-	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+	var conn net.Conn
+	var err error
+
+	dialer := &net.Dialer{
+		Timeout: 30 * time.Second,
+	}
+
+	if s.cfg.EnableTLS {
+		tlsConfig := &tls.Config{
+			ServerName:         s.cfg.TLSServerName,
+			InsecureSkipVerify: s.cfg.TLSSkipVerify,
+		}
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+	} else {
+		conn, err = dialer.DialContext(ctx, "tcp", addr)
+	}
+
 	if err != nil {
 		slog.Error("Connect failed", "err", err)
 		return
@@ -74,6 +91,13 @@ func (s *Sender) connect(ctx context.Context) {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	} else if tlsConn, ok := conn.(*tls.Conn); ok {
+		if netConn := tlsConn.NetConn(); netConn != nil {
+			if tcpConn, ok := netConn.(*net.TCPConn); ok {
+				tcpConn.SetKeepAlive(true)
+				tcpConn.SetKeepAlivePeriod(30 * time.Second)
+			}
+		}
 	}
 
 	if !s.handleAuth(conn) {

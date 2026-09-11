@@ -20,6 +20,9 @@ type Config struct {
 	ProbePort           int
 	ProbeProtocolPrefer string
 	Debug               bool
+	EnableTLS           bool
+	TLSSkipVerify       bool
+	TLSServerName       string
 }
 
 func LoadConfig() *Config {
@@ -36,6 +39,9 @@ func LoadConfig() *Config {
 	probePort := flag.Int("probePort", 80, "探针端口")
 	proto := flag.String("proto", "ipv4", "探针协议偏好(ipv4或ipv6)")
 	debug := flag.Bool("debug", false, "开启调试模式")
+	tls := flag.Bool("tls", false, "启用 TLS 加密连接")
+	tlsSkipVerify := flag.Bool("tls-skip-verify", false, "跳过 TLS 证书验证")
+	tlsSni := flag.String("tls-sni", "", "自定义 TLS SNI 域名(默认为 host)")
 
 	flag.Parse()
 
@@ -52,6 +58,9 @@ func LoadConfig() *Config {
 		ProbePort:           *probePort,
 		ProbeProtocolPrefer: *proto,
 		Debug:               *debug,
+		EnableTLS:           *tls,
+		TLSSkipVerify:       *tlsSkipVerify,
+		TLSServerName:       *tlsSni,
 	}
 
 	if *dsn != "" {
@@ -90,6 +99,10 @@ func (c *Config) validate() {
 	}
 	if c.Server == "" || c.User == "" || c.Password == "" {
 		log.Fatal("主机地址、用户名和密码不能为空")
+	}
+
+	if c.EnableTLS && c.TLSServerName == "" {
+		c.TLSServerName = c.Server
 	}
 	
 	switch strings.ToLower(c.ProbeProtocolPrefer) {
